@@ -1,6 +1,4 @@
-required <- c("shiny", "readxl", "DT")
-missing <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
-if (length(missing)) stop("请先运行 Rscript setup.R，缺少：", paste(missing, collapse = ", "))
+source("setup.R", local = TRUE)
 library(shiny)
 options(shiny.maxRequestSize = 30 * 1024^2)
 source("R/import.R")

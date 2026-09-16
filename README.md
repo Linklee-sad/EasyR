@@ -4,19 +4,17 @@
 
 ## 启动
 
-安装 R 后，在项目目录的终端执行一次：
+在 RStudio 中打开 `app.R`，点击 **Run App** 即可。
+
+程序会自动检查依赖，首次启动时只安装缺少的包，完成后自动打开界面。请保持联网，并在 Console 中查看安装进度；后续启动会复用已安装的包。下载的依赖保存在项目内的 `.R-library/`，不会上传 GitHub。安装失败时会显示原因提示，解决后再次点击 **Run App** 即可。
+
+如果偏好终端，也可以在项目目录执行：
 
 ```sh
-Rscript setup.R
+Rscript -e 'print(source("app.R")$value)'
 ```
 
-然后启动：
-
-```sh
-Rscript -e 'shiny::runApp(launch.browser = TRUE)'
-```
-
-也可以用 RStudio 打开 `app.R`，点击 **Run App**。首次安装依赖需要联网。
+如需仅安装依赖，可以单独运行 `Rscript setup.R`。
 
 ## 使用
 
@@ -32,7 +30,7 @@ Rscript -e 'shiny::runApp(launch.browser = TRUE)'
 - `app.R`：入口和模块连接。
 - `R/import.R`：文件读取、导入界面及其状态。
 - `R/preview.R`：预览和字段概况。
-- `setup.R`：安装依赖。
+- `setup.R`：启动时自动检查和安装依赖。
 
 新增清洗、绘图或统计模块时，分别提供 `xxx_ui(id)` 和 `xxx_server(id, data)`；通过响应式数据连接模块，避免全局共享用户数据。
 

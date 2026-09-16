@@ -5,4 +5,5 @@
 .DS_Store
 .Renviron
 renv/library/
+.R-library/
 data/private/
