@@ -1,5 +1,5 @@
 local({
-  packages <- c("shiny", "readxl", "DT")
+  packages <- c("shiny", "readxl", "DT", "ggplot2", "plotly", "jsonlite")
   # Keep downloaded packages in a writable, version-specific project library.
   version <- paste(R.version$major, strsplit(R.version$minor, ".", fixed = TRUE)[[1]][1], sep = ".")
   project_library <- file.path(".R-library", R.version$platform, version)
