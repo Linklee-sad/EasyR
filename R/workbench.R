@@ -21,21 +21,50 @@ workbench_ui <- function(id) {
     checkboxInput(ns("deduplicate"), "删除重复行", FALSE),
     actionButton(ns("reset"), "恢复原始数据"),
     helpText("选项修改后立即生效。重复行按所选字段判断；中位数填充保留非数值字段和全空字段。"),
-    downloadButton(ns("csv"), "下载处理后的 CSV")
+    downloadButton(ns("csv"), "下载处理后的 CSV"),
+    actionButton(ns("save_csv"), "保存 CSV 到工作目录"),
+    tags$div(style = "overflow-wrap:anywhere", textOutput(ns("saved_csv")))
   )
 }
 
-workbench_server <- function(id, original) {
+workbench_server <- function(id, original, directory = reactive(getwd()), dataset_id = reactive("default")) {
   moduleServer(id, function(input, output, session) {
-    reset <- function() {
-      req(original())
-      choices <- setNames(as.character(seq_along(original())), paste0(seq_along(original()), ". ", names(original())))
-      updateSelectizeInput(session, "columns", choices = choices, selected = unname(choices))
-      updateSelectInput(session, "missing", selected = "keep")
-      updateCheckboxInput(session, "deduplicate", value = FALSE)
+    configurations <- reactiveVal(list())
+    last_id <- reactiveVal(NULL)
+    capture_config <- function(id) {
+      if (!length(id) || is.null(input$columns)) return()
+      values <- configurations()
+      values[[id]] <- list(columns = input$columns, missing = if (is.null(input$missing)) "keep" else input$missing,
+        deduplicate = isTRUE(input$deduplicate))
+      configurations(values)
     }
-    observeEvent(original(), reset())
-    observeEvent(input$reset, reset())
+    restore_config <- function(id, force_default = FALSE) {
+      d <- original(); req(d)
+      choices <- setNames(as.character(seq_along(d)), paste0(seq_along(d), ". ", names(d)))
+      saved <- if (!force_default) configurations()[[id]] else NULL
+      selected <- if (is.null(saved)) unname(choices) else intersect(saved$columns, unname(choices))
+      if (!length(selected)) selected <- unname(choices)
+      freezeReactiveValue(input, "columns"); freezeReactiveValue(input, "missing"); freezeReactiveValue(input, "deduplicate")
+      updateSelectizeInput(session, "columns", choices = choices, selected = selected)
+      updateSelectInput(session, "missing", selected = if (is.null(saved)) "keep" else saved$missing)
+      updateCheckboxInput(session, "deduplicate", value = if (is.null(saved)) FALSE else saved$deduplicate)
+    }
+    observeEvent(list(dataset_id(), original()), {
+      new_id <- dataset_id()
+      old_id <- last_id()
+      if (length(old_id) && !identical(old_id, new_id)) capture_config(old_id)
+      if (!length(new_id) || is.null(original())) { last_id(NULL); return() }
+      restore_config(new_id)
+      last_id(new_id)
+    }, ignoreNULL = FALSE)
+    observeEvent(list(input$columns, input$missing, input$deduplicate), {
+      if (length(last_id())) capture_config(last_id())
+    }, ignoreInit = TRUE)
+    observeEvent(input$reset, {
+      req(dataset_id(), original())
+      values <- configurations(); values[[dataset_id()]] <- NULL; configurations(values)
+      restore_config(dataset_id(), force_default = TRUE)
+    })
     data <- reactive({
       req(original())
       validate(need(length(input$columns) > 0, "请在左侧至少选择一个字段。"))
@@ -43,99 +72,28 @@ workbench_server <- function(id, original) {
       req(all(indices %in% seq_along(original())))
       clean_table(original(), indices, input$missing, isTRUE(input$deduplicate))
     })
-    output$csv <- downloadHandler(
-      filename = function() paste0("r-mod-", Sys.Date(), ".csv"),
-      content = function(file) {
+    write_csv <- function(file) {
         value <- data()
         con <- file(file, open = "wb")
         on.exit(close(con))
         writeBin(charToRaw("\ufeff"), con)
         lines <- capture.output(write.csv(value, row.names = FALSE, na = ""))
         writeBin(charToRaw(enc2utf8(paste0(paste(lines, collapse = "\r\n"), "\r\n"))), con)
-      }
-    )
-    data
-  })
-}
-
-analysis_ui <- function(id) {
-  ns <- NS(id)
-  tagList(
-    h3("描述统计与绘图"),
-    p("对当前处理后的数据计算统计量。"),
-    tableOutput(ns("summary")),
-    fluidRow(
-      column(4, selectInput(ns("kind"), "图形", c("直方图" = "hist", "散点图" = "scatter", "类别频数图" = "bar"))),
-      column(4, selectInput(ns("x"), "横轴 / 字段", NULL)),
-      column(4, conditionalPanel(sprintf("input['%s'] == 'scatter'", ns("kind")), selectInput(ns("y"), "纵轴", NULL)))
-    ),
-    plotOutput(ns("plot"), height = "420px"),
-    helpText("数值图忽略缺失值和无穷值；类别图显示频数最高的 20 类（不计缺失值）。"),
-    downloadButton(ns("png"), "下载 PNG 图片")
-  )
-}
-
-analysis_server <- function(id, data) {
-  moduleServer(id, function(input, output, session) {
-    observeEvent(list(data(), input$kind), {
-      d <- data()
-      eligible <- if (identical(input$kind, "bar")) seq_along(d) else which(vapply(d, is.numeric, logical(1)))
-      choices <- setNames(as.character(eligible), paste0(eligible, ". ", names(d)[eligible]))
-      selected <- function(old, fallback) if (length(old) == 1 && old %in% unname(choices)) old else fallback
-      first <- if (length(choices)) unname(choices[1]) else character()
-      second <- if (length(choices) > 1) unname(choices[2]) else first
-      updateSelectInput(session, "x", choices = choices, selected = selected(input$x, first))
-      updateSelectInput(session, "y", choices = choices, selected = selected(input$y, second))
-    })
-    output$summary <- renderTable({
-      d <- data()
-      indices <- which(vapply(d, is.numeric, logical(1)))
-      validate(need(length(indices) > 0, "当前没有数值字段，可选择类别频数图。"))
-      do.call(rbind, lapply(indices, function(i) {
-        x <- d[[i]]; x <- x[is.finite(x)]
-        data.frame(字段 = names(d)[i], 有效数 = length(x),
-          均值 = if (length(x)) mean(x) else NA_real_,
-          中位数 = if (length(x)) median(x) else NA_real_,
-          标准差 = if (length(x) > 1) sd(x) else NA_real_, check.names = FALSE)
-      }))
-    }, digits = 3, striped = TRUE)
-    draw <- function() {
-      d <- data()
-      validate(need(nrow(d) > 0, "没有可绘制的数据，请调整清洗选项。"))
-      req(input$x)
-      i <- as.integer(input$x)
-      req(i %in% seq_along(d))
-      x <- d[[i]]
-      par(mar = c(6, 4, 3, 1))
-      if (input$kind == "bar") {
-        counts <- head(sort(table(as.character(x), useNA = "no"), decreasing = TRUE), 20)
-        validate(need(length(counts) > 0, "此字段没有非缺失数据。"))
-        barplot(counts, las = 2, col = "#3b82f6", border = NA, ylab = "Count", main = names(d)[i])
-      } else {
-        validate(need(is.numeric(x), "请选择数值字段。"))
-        if (input$kind == "scatter") {
-          req(input$y)
-          j <- as.integer(input$y); req(j %in% seq_along(d))
-          y <- d[[j]]
-          validate(need(is.numeric(y), "请选择数值纵轴。"))
-          ok <- is.finite(x) & is.finite(y)
-          validate(need(any(ok), "这两个字段没有可配对的有效数值。"))
-          plot(x[ok], y[ok], pch = 19, col = "#2563eb88", xlab = names(d)[i], ylab = names(d)[j])
-        } else {
-          x <- x[is.finite(x)]
-          validate(need(length(x) > 0, "此字段没有有效数值。"))
-          hist(x, col = "#3b82f6", border = "white", main = names(d)[i], xlab = names(d)[i])
-        }
-      }
     }
-    output$plot <- renderPlot(draw())
-    output$png <- downloadHandler(
-      filename = function() paste0("r-mod-chart-", Sys.Date(), ".png"),
-      content = function(file) {
-        png(file, width = 1400, height = 900, res = 150)
-        on.exit(dev.off())
-        draw()
-      }
+    output$csv <- downloadHandler(
+      filename = function() paste0("easyr-", Sys.Date(), ".csv"),
+      content = write_csv
     )
+    saved_csv <- reactiveVal("")
+    output$saved_csv <- renderText(saved_csv())
+    observeEvent(input$save_csv, {
+      req(data())
+      tryCatch({
+        path <- save_to_workdir(directory(), "easyr-data", ".csv", write_csv)
+        saved_csv(paste("上次保存：", path))
+        showNotification("CSV 已保存到工作目录。", type = "message")
+      }, error = function(e) showNotification(conditionMessage(e), type = "error"))
+    })
+    data
   })
 }
