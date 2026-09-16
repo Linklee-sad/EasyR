@@ -1,6 +1,6 @@
 preview_ui <- function(id) {
   ns <- NS(id)
-  tagList(h3("02 查看数据"), textOutput(ns("overview")),
+  tagList(h3("查看处理后的数据"), textOutput(ns("overview")),
           tabsetPanel(
             tabPanel("数据预览", DT::DTOutput(ns("table"))),
             tabPanel("字段概况", DT::DTOutput(ns("columns")))
