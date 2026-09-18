@@ -1,11 +1,13 @@
 local({
-  packages <- c("shiny", "readxl", "DT", "ggplot2", "plotly", "jsonlite")
+  packages <- c("shiny", "readxl", "DT", "ggplot2", "plotly", "jsonlite", "httr2", "commonmark", "randomForest", "e1071", "cluster", "quantmod", "tseries")
   # Keep downloaded packages in a writable, version-specific project library.
   version <- paste(R.version$major, strsplit(R.version$minor, ".", fixed = TRUE)[[1]][1], sep = ".")
   project_library <- file.path(".R-library", R.version$platform, version)
   if (dir.exists(project_library)) .libPaths(c(project_library, .libPaths()))
   missing_packages <- function() {
-    packages[!vapply(packages, requireNamespace, logical(1), quietly = TRUE)]
+    packages[!vapply(packages, function(package) {
+      suppressMessages(suppressWarnings(requireNamespace(package, quietly = TRUE)))
+    }, logical(1))]
   }
   missing <- missing_packages()
   if (length(missing)) {

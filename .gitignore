@@ -4,6 +4,13 @@
 .Rproj.user/
 .DS_Store
 .Renviron
+.env
+.env.*
+!.env.example
 renv/library/
 .R-library/
 data/private/
+/Test Data/
+*.easyr
+*.rds
+/outputs/
