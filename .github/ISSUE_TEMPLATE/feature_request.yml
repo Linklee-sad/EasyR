@@ -1,0 +1,24 @@
+name: 功能建议
+description: 提议新的数据处理、绘图或分析能力
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 说明你在处理什么数据，以及当前流程为什么不够用。
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 期望行为
+      description: 描述用户应该如何通过界面完成任务。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 其他方案
+      description: 如果已经尝试其他方法，请在这里说明。
