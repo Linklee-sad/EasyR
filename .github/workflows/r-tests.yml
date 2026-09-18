@@ -1,0 +1,43 @@
+name: R tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: |
+            any::shiny
+            any::readxl
+            any::DT
+            any::ggplot2
+            any::plotly
+            any::jsonlite
+            any::httr2
+            any::commonmark
+            any::randomForest
+            any::e1071
+            any::cluster
+            any::quantmod
+            any::tseries
+          needs: check
+      - name: Run EasyR test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          for test_file in *_test.R; do
+            echo "Running ${test_file}"
+            Rscript "${test_file}"
+          done
