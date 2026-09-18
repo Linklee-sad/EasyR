@@ -1,3 +1,6 @@
+if (!exists("ai_report_ui", mode = "function")) source("R/ai.R")
+if (!exists("algorithm_title_ui", mode = "function")) source("R/algorithm_tutorials.R")
+
 lm_number <- function(x) {
   if (!is.finite(x)) return("无法计算")
   format(signif(x, 4), trim = TRUE, scientific = abs(x) > 0 && abs(x) < 0.001)
@@ -24,6 +27,7 @@ fit_readable_lm <- function(data, outcome, predictors) {
   d <- selected[valid, , drop = FALSE]
   if (nrow(d) < 3) stop("有效数据不足 3 行，请检查所选字段的缺失值。", call. = FALSE)
   if (length(unique(d[[1]])) < 2) stop("因变量在有效数据中没有变化，无法进行有意义的回归。", call. = FALSE)
+  analysis_summary <- ai_analysis_summary(d, names(data)[c(outcome, predictors)])
   # Only generated names enter the formula; uploaded column names are labels.
   names(d) <- c("outcome", paste0("predictor", seq_along(predictors)))
   labels <- c("截距")
@@ -156,11 +160,12 @@ fit_readable_lm <- function(data, outcome, predictors) {
     "常规 OLS 推断依赖模型形式正确、关系近似线性且可加、观测误差相互独立、误差方差近似恒定，以及用于小样本检验和区间估计的误差正态性。残差图与 Q-Q 图只能用于诊断这些假设，不能证明假设成立。",
     "系数表示控制模型中其他变量后的条件关联。未观测混杂、反向因果、选择偏差和测量误差仍可能影响估计，因此不能仅凭本回归结果作因果解释。",
     "重复测量、聚类数据或时间序列可能违反独立性；异方差会影响常规标准误；高杠杆点和异常值可能显著影响结果。必要时应考虑聚类或稳健标准误、时间序列模型、变量变换、非线性项及影响点分析。",
-    "结果基于左侧清洗后的完整案例。若此前使用中位数填充，当前标准误未计入填补不确定性。本报告未进行样本外验证、多重检验校正或模型选择偏差调整。")
+    "结果基于左侧清洗后的完整案例。若此前使用缺失值填充，当前标准误未计入填补不确定性。本报告未进行样本外验证、多重检验校正或模型选择偏差调整。")
   list(model = model, summary = summary, coefficients = table,
     report = paste(report, collapse = "\n\n"), interpretation = interpretations,
     used = nrow(d), excluded = sum(!valid), outcome = yname,
-    predictors = names(data)[predictors], near_perfect = near_perfect)
+    predictors = names(data)[predictors], near_perfect = near_perfect,
+    analysis_summary = analysis_summary)
 }
 
 lm_plot_theme <- function() {
@@ -223,8 +228,10 @@ build_lm_qq_plot <- function(result) {
 regression_ui <- function(id) {
   ns <- NS(id)
   tagList(
-    h3("线性回归"),
+    algorithm_title_ui(ns, "线性回归"),
     p("选择要解释的数值字段作为因变量，再选择一个或多个自变量。使用左侧清洗后的数据。"),
+    conditionalPanel(sprintf("input['%s'] %% 2 === 1", ns("tutorial_toggle")),
+      algorithm_tutorial_ui(ns("tutorial"), "regression")),
     fluidRow(column(5, selectInput(ns("outcome"), "因变量 Y（数值）", NULL)),
       column(7, selectizeInput(ns("predictors"), "自变量 X（可多选）", NULL, multiple = TRUE))),
     helpText("在自变量框中依次点击多个字段即可建立多元回归；点击已选字段旁的 × 可移除。模型包含截距。文字、逻辑值和因子作为类别变量，按类别排序后的第一类作为参照；类别编号若是数值，会按连续变量处理。"),
@@ -232,6 +239,7 @@ regression_ui <- function(id) {
     tags$div(style = "margin:12px 0", textOutput(ns("status"))),
     tabsetPanel(
       tabPanel("专业解读", tags$div(style = "white-space:pre-wrap;line-height:1.9", textOutput(ns("report")))),
+      tabPanel("AI 增强解读", ai_report_ui(ns("ai_report"))),
       tabPanel("系数表", DT::DTOutput(ns("coefficients")),
         helpText("标准化系数仅对数值自变量计算，便于比较量纲不同的数值变量；VIF 用于诊断模型项的多重共线性。95% 区间使用 t 分布，p 值来自系数为 0 的双侧检验。")),
       tabPanel("拟合图（ggplot2）", ggplot_editor_ui(ns("fit_editor"), height = "480px"),
@@ -243,27 +251,31 @@ regression_ui <- function(id) {
         p("残差图若出现弯曲或漏斗形，可能提示非线性或异方差；Q-Q 图明显偏离直线，可能提示误差分布偏离正态。"))
     ), hr(),
     downloadButton(ns("download"), "下载专业解读报告 TXT"),
-    actionButton(ns("save"), "保存专业报告到工作目录"),
+    actionButton(ns("save"), "保存专业报告到项目文件夹"),
     tags$div(style = "overflow-wrap:anywhere", textOutput(ns("saved")))
   )
 }
 
-regression_server <- function(id, data, directory = reactive(getwd())) {
+regression_server <- function(id, data, directory = reactive(getwd()), ai_config = reactive(list())) {
   moduleServer(id, function(input, output, session) {
+    algorithm_tutorial_server("tutorial", "regression")
+    algorithm_tutorial_toggle_server(input, session)
     result <- reactiveVal(NULL)
     status <- reactiveVal("选择变量后，点击“运行线性回归”。")
     saved <- reactiveVal("")
     observeEvent(data(), {
       d <- data()
       numeric <- which(vapply(d, is.numeric, logical(1)))
-      choices <- setNames(as.character(numeric), paste0(numeric, ". ", names(d)[numeric]))
+      labels <- if (length(numeric)) paste0(numeric, ". ", names(d)[numeric]) else character()
+      choices <- setNames(as.character(numeric), labels)
       selected <- if (length(input$outcome) == 1 && input$outcome %in% choices) input$outcome else unname(head(choices, 1))
       updateSelectInput(session, "outcome", choices = choices, selected = selected)
     })
     observeEvent(list(data(), input$outcome), {
       d <- data()
       eligible <- setdiff(seq_along(d), as.integer(input$outcome))
-      choices <- setNames(as.character(eligible), paste0(eligible, ". ", names(d)[eligible]))
+      labels <- if (length(eligible)) paste0(eligible, ". ", names(d)[eligible]) else character()
+      choices <- setNames(as.character(eligible), labels)
       updateSelectizeInput(session, "predictors", choices = choices, selected = intersect(input$predictors, unname(choices)))
     })
     # Any changed data or selection clears the old result before a new fit.
@@ -286,6 +298,9 @@ regression_server <- function(id, data, directory = reactive(getwd())) {
     })
     output$status <- renderText(status())
     output$report <- renderText({ req(result()); result()$report })
+    ai_report_server("ai_report", ai_config, "线性回归",
+      reactive(if (is.null(result())) "" else result()$report),
+      reactive(if (is.null(result())) NULL else ai_model_context("线性回归", result())))
     output$coefficients <- DT::renderDT({
       req(result())
       DT::formatSignif(DT::datatable(result()$coefficients, rownames = FALSE, escape = TRUE,

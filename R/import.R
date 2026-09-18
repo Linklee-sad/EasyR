@@ -1,3 +1,26 @@
+repair_import_names <- function(data) {
+  column_names <- enc2utf8(names(data))
+  if (!length(column_names)) return(data)
+
+  empty <- is.na(column_names) | !nzchar(trimws(column_names))
+  if (empty[1]) column_names[1] <- "序号"
+  other_empty <- which(empty & (seq_along(column_names) != 1L))
+  if (length(other_empty)) column_names[other_empty] <- paste0("未命名列_", other_empty)
+
+  unique_names <- character(length(column_names))
+  for (i in seq_along(column_names)) {
+    candidate <- base <- column_names[i]
+    suffix <- 1L
+    while (i > 1L && any(candidate == unique_names[seq_len(i - 1L)])) {
+      candidate <- paste0(base, "_", suffix)
+      suffix <- suffix + 1L
+    }
+    unique_names[i] <- candidate
+  }
+  names(data) <- unique_names
+  data
+}
+
 read_table_file <- function(path, filename, encoding = "UTF-8", sep = ",", sheet = NULL, header = TRUE) {
   ext <- tolower(tools::file_ext(filename))
   data <- switch(ext,
@@ -8,6 +31,7 @@ read_table_file <- function(path, filename, encoding = "UTF-8", sep = ",", sheet
     stop("请选择 CSV、XLS 或 XLSX 文件。")
   )
   if (!ncol(data)) stop("文件没有可读取的列。")
+  data <- repair_import_names(data)
   data
 }
 
@@ -78,7 +102,7 @@ import_ui <- function(id) {
     actionButton(ns("import"), "导入并加入数据集", class = "btn-primary"),
     actionButton(ns("demo"), "试用示例"),
     hr(), textOutput(ns("status")),
-    helpText("可以一次选择多个 CSV。批量文件共用当前编码、分隔符和首行设置；Excel 请每次选择一个。取消“第一行是字段名”后，程序会自动生成字段名。")
+    helpText("可以一次选择多个 CSV。批量文件共用当前编码、分隔符和首行设置；Excel 请每次选择一个。取消“第一行是字段名”后，程序会自动生成字段名。表头中的空白字段也会自动命名；第一列为空时命名为“序号”。")
   )
 }
 
@@ -86,6 +110,7 @@ import_server <- function(id) {
   moduleServer(id, function(input, output, session) {
     datasets <- reactiveVal(list())
     active <- reactiveVal(NULL)
+    revision <- reactiveVal(0L)
     status <- reactiveVal("选择一个或多个 CSV，或点击“试用示例”开始。")
     refresh_choices <- function(selected = active()) {
       choices <- names(datasets())
@@ -108,7 +133,28 @@ import_server <- function(id) {
       }
       datasets(current)
       refresh_choices(added[1])
+      revision(revision() + 1L)
       invisible(added)
+    }
+    snapshot_state <- function() {
+      list(datasets = datasets(), active = active())
+    }
+    restore_state <- function(state) {
+      if (!is.list(state) || !is.list(state$datasets) || !length(state$datasets)) {
+        stop("项目中没有可恢复的数据集。", call. = FALSE)
+      }
+      if (is.null(names(state$datasets)) || any(!nzchar(names(state$datasets))) || anyDuplicated(names(state$datasets))) {
+        stop("项目中的数据集名称无效。", call. = FALSE)
+      }
+      valid <- vapply(state$datasets, function(value) is.data.frame(value) && ncol(value) > 0L, logical(1))
+      if (!all(valid)) stop("项目包含无法识别的数据集。", call. = FALSE)
+      datasets(state$datasets)
+      selected <- state$active
+      if (length(selected) != 1L || !selected %in% names(state$datasets)) selected <- names(state$datasets)[1L]
+      refresh_choices(selected)
+      revision(revision() + 1L)
+      status(sprintf("已从 EasyR 项目恢复 %d 个数据集。", length(state$datasets)))
+      invisible(selected)
     }
     output$file_info <- renderText({
       req(input$file)
@@ -169,6 +215,7 @@ import_server <- function(id) {
       if (is.null(active()) || !active() %in% names(datasets())) return(NULL)
       datasets()[[active()]]
     })
-    list(data = current_data, name = reactive(active()), datasets = reactive(datasets()))
+    list(data = current_data, name = reactive(active()), datasets = reactive(datasets()), add = add_datasets,
+      snapshot = snapshot_state, restore = restore_state, revision = reactive(revision()))
   })
 }

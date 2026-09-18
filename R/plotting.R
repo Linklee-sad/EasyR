@@ -1,10 +1,53 @@
 plot_defaults <- function() list(
   bins = 30, mean_line = FALSE, median_line = FALSE, smooth = FALSE,
   ribbon = TRUE, points = FALSE, facet = FALSE, horizontal = FALSE,
+  corr_labels = TRUE, corr_method = "pearson",
   title = "", x_label = "", y_label = "", z_label = "", theme = "minimal",
   color = "#3b82f6", palette = "D", font_size = 12, alpha = 0.65,
   point_size = 2.5, line_width = 1, width = 10, height = 6, dpi = 150
 )
+
+build_correlation_plot <- function(data, variables, options = list()) {
+  o <- modifyList(plot_defaults(), options)
+  variables <- unique(suppressWarnings(as.integer(variables)))
+  variables <- variables[!is.na(variables) & variables %in% seq_along(data)]
+  if (length(variables) < 2L) stop("相关性热图至少需要选择两个数值字段。", call. = FALSE)
+  if (!all(vapply(data[variables], is.numeric, logical(1)))) stop("相关性热图只能使用数值字段。", call. = FALSE)
+  method <- as.character(o$corr_method)[1]
+  if (!method %in% c("pearson", "spearman")) stop("请选择 Pearson 或 Spearman 相关系数。", call. = FALSE)
+  values <- as.data.frame(lapply(data[variables], function(x) { x[!is.finite(x)] <- NA_real_; x }), check.names = FALSE)
+  names(values) <- names(data)[variables]
+  usable <- vapply(values, function(x) sum(!is.na(x)) >= 2L && length(unique(x[!is.na(x)])) >= 2L, logical(1))
+  if (sum(usable) < 2L) stop("至少需要两个包含足够有效变化值的数值字段。", call. = FALSE)
+  values <- values[usable]
+  matrix <- suppressWarnings(stats::cor(values, use = "pairwise.complete.obs", method = method))
+  long <- as.data.frame(as.table(matrix), stringsAsFactors = FALSE)
+  names(long) <- c("字段一", "字段二", "相关系数")
+  levels <- colnames(matrix)
+  long$字段一 <- factor(long$字段一, levels = levels)
+  long$字段二 <- factor(long$字段二, levels = rev(levels))
+  p <- ggplot2::ggplot(long, ggplot2::aes(字段一, 字段二, fill = 相关系数)) +
+    ggplot2::geom_tile(colour = "white", linewidth = max(0.2, o$line_width / 2)) +
+    ggplot2::scale_fill_gradient2(low = "#2563eb", mid = "#ffffff", high = "#dc2626",
+      midpoint = 0, limits = c(-1, 1), na.value = "#e5e7eb", name = "相关系数") +
+    ggplot2::coord_equal()
+  if (isTRUE(o$corr_labels)) {
+    labels <- ifelse(is.finite(long$相关系数), sprintf("%.2f", long$相关系数), "NA")
+    p <- p + ggplot2::geom_text(ggplot2::aes(label = labels), size = max(2.5, o$font_size / 4.2))
+  }
+  theme <- switch(o$theme, classic = ggplot2::theme_classic, bw = ggplot2::theme_bw, ggplot2::theme_minimal)
+  custom_title <- if (length(o$title) == 1L && nzchar(trimws(o$title))) o$title else
+    paste0(if (method == "pearson") "Pearson" else "Spearman", " 相关性热图")
+  p <- p + theme(base_size = o$font_size) +
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 40, hjust = 1), plot.title.position = "plot") +
+    ggplot2::labs(title = custom_title, x = if (nzchar(trimws(o$x_label))) o$x_label else NULL,
+      y = if (nzchar(trimws(o$y_label))) o$y_label else NULL)
+  table <- data.frame(字段 = rownames(matrix), round(matrix, 4), check.names = FALSE)
+  list(plot = p,
+    notes = sprintf("使用 %d 个数值字段计算 %s 相关系数；每一对字段使用其共同有效观测。灰色表示无法计算。",
+      ncol(matrix), if (method == "pearson") "Pearson" else "Spearman"),
+    stats = table, used = nrow(data), excluded = 0L)
+}
 
 plot_no_group_value <- "0"
 
@@ -85,7 +128,7 @@ build_plotly_3d <- function(data, x, y, z, group = NULL, options = list(), max_p
 
 build_ggplot <- function(data, kind, x, y = NULL, group = NULL, options = list()) {
   o <- modifyList(plot_defaults(), options)
-  if (!kind %in% c("hist", "density", "scatter", "bar", "box", "violin")) stop("请选择有效图形。", call. = FALSE)
+  if (!kind %in% c("hist", "density", "scatter", "line", "qq", "ecdf", "bar", "box", "violin")) stop("请选择有效图形。", call. = FALSE)
   column <- function(i) length(i) == 1 && !is.na(i) && i %in% seq_along(data)
   x <- as.integer(x)
   if (!column(x)) stop("请选择绘图字段。", call. = FALSE)
@@ -95,13 +138,16 @@ build_ggplot <- function(data, kind, x, y = NULL, group = NULL, options = list()
     group <- as.integer(group)
     if (!column(group)) stop("请选择有效分组字段。", call. = FALSE)
   }
-  numeric_x <- kind != "bar"
+  numeric_x <- !kind %in% c("bar", "line")
   if (numeric_x && !is.numeric(data[[x]])) stop("此图形需要数值字段。", call. = FALSE)
+  if (kind == "line" && !(is.numeric(data[[x]]) || inherits(data[[x]], c("Date", "POSIXct", "POSIXlt")))) {
+    stop("折线图横轴需要数值、日期或日期时间字段。", call. = FALSE)
+  }
   d <- data.frame(.x = data[[x]], check.names = FALSE)
   valid <- if (numeric_x) is.finite(d$.x) else !is.na(d$.x)
-  if (kind == "scatter") {
+  if (kind %in% c("scatter", "line")) {
     y <- as.integer(y)
-    if (!column(y) || !is.numeric(data[[y]])) stop("散点图需要数值纵轴。", call. = FALSE)
+    if (!column(y) || !is.numeric(data[[y]])) stop("散点图和折线图需要数值纵轴。", call. = FALSE)
     d$.y <- data[[y]]
     valid <- valid & is.finite(d$.y)
   }
@@ -155,6 +201,37 @@ build_ggplot <- function(data, kind, x, y = NULL, group = NULL, options = list()
         if (isTRUE(o$ribbon)) "阴影为均值的 95% 置信带，不是预测区间。" else "",
         if (any(!usable)) "少于 3 行或横轴无变化的组不画回归线。" else "")
     }
+  } else if (kind == "line") {
+    y_axis <- names(data)[y]
+    d <- d[order(d$.group, d$.x), , drop = FALSE]
+    p <- ggplot2::ggplot(d, ggplot2::aes(x = .x, y = .y, group = .group))
+    p <- if (grouped) p + ggplot2::geom_line(ggplot2::aes(colour = .group), linewidth = o$line_width, alpha = o$alpha) else
+      p + ggplot2::geom_line(colour = o$color, linewidth = o$line_width, alpha = o$alpha)
+    if (isTRUE(o$points)) {
+      p <- if (grouped) p + ggplot2::geom_point(ggplot2::aes(colour = .group), size = o$point_size, alpha = o$alpha) else
+        p + ggplot2::geom_point(colour = o$color, size = o$point_size, alpha = o$alpha)
+    }
+    if (isTRUE(o$smooth)) {
+      p <- if (grouped) p + ggplot2::geom_smooth(ggplot2::aes(colour = .group, fill = .group), method = "loess",
+        formula = y ~ x, se = isTRUE(o$ribbon), linewidth = o$line_width) else
+        p + ggplot2::geom_smooth(method = "loess", formula = y ~ x, se = isTRUE(o$ribbon),
+          colour = "#d97706", fill = "#fbbf24", linewidth = o$line_width)
+      notes <- paste(notes, "趋势线使用 LOESS 局部平滑，仅用于观察趋势。")
+    }
+  } else if (kind == "qq") {
+    x_axis <- "理论正态分位数"; y_axis <- names(data)[x]
+    p <- ggplot2::ggplot(d, ggplot2::aes(sample = .x, group = .group))
+    p <- if (grouped) p + ggplot2::stat_qq(ggplot2::aes(colour = .group), alpha = o$alpha, size = o$point_size) +
+      ggplot2::stat_qq_line(ggplot2::aes(colour = .group), linewidth = o$line_width) else
+      p + ggplot2::stat_qq(colour = o$color, alpha = o$alpha, size = o$point_size) +
+        ggplot2::stat_qq_line(colour = "#d97706", linewidth = o$line_width)
+    notes <- paste(notes, "点越接近参考直线，数据分布越接近正态分布；尾部偏离可提示偏态或厚尾。")
+  } else if (kind == "ecdf") {
+    y_axis <- "累计比例"
+    p <- if (grouped) p + ggplot2::stat_ecdf(ggplot2::aes(colour = .group), linewidth = o$line_width, alpha = o$alpha) else
+      p + ggplot2::stat_ecdf(colour = o$color, linewidth = o$line_width, alpha = o$alpha)
+    p <- p + ggplot2::scale_y_continuous(labels = scales::label_percent())
+    notes <- paste(notes, "曲线表示不超过横轴数值的观测比例，可用于比较各组分布的整体位置和离散程度。")
   } else if (kind == "bar") {
     counts <- sort(table(as.character(d$.x)), decreasing = TRUE)
     kept <- head(counts, 20)
@@ -195,7 +272,7 @@ build_ggplot <- function(data, kind, x, y = NULL, group = NULL, options = list()
   }
   if (grouped) {
     p <- p + ggplot2::scale_fill_viridis_d(option = o$palette, name = group_name) + ggplot2::scale_colour_viridis_d(option = o$palette, name = group_name)
-    if (isTRUE(o$facet) && kind %in% c("hist", "density", "scatter")) p <- p + ggplot2::facet_wrap(ggplot2::vars(.group), ncol = 2)
+    if (isTRUE(o$facet) && kind %in% c("hist", "density", "scatter", "line", "qq", "ecdf")) p <- p + ggplot2::facet_wrap(ggplot2::vars(.group), ncol = 2)
   }
   theme <- switch(o$theme, classic = ggplot2::theme_classic, bw = ggplot2::theme_bw, ggplot2::theme_minimal)
   p <- p + theme(base_size = o$font_size) + ggplot2::theme(legend.position = "bottom", plot.title.position = "plot") +
@@ -210,12 +287,20 @@ analysis_ui <- function(id) {
   tagList(
     h3("ggplot2 绘图工作台"),
     fluidRow(
-      column(4, selectInput(ns("kind"), "图形", c("直方图" = "hist", "密度图" = "density", "散点图" = "scatter", "3D 散点图（可旋转）" = "scatter3d", "箱线图" = "box", "小提琴图" = "violin", "类别频数图" = "bar"))),
-      column(4, selectInput(ns("x"), "横轴 / 数值字段", NULL)),
-      column(4, conditionalPanel(condition(c("scatter", "scatter3d")), selectInput(ns("y"), "纵轴", NULL)))
+      column(4, selectInput(ns("kind"), "图形", c("直方图" = "hist", "密度图" = "density", "散点图" = "scatter",
+        "折线趋势图" = "line", "Q-Q 正态检验图" = "qq", "经验累积分布图（ECDF）" = "ecdf",
+        "相关性热图" = "correlation", "3D 散点图（可旋转）" = "scatter3d", "箱线图" = "box",
+        "小提琴图" = "violin", "类别频数图" = "bar"))),
+      column(4, conditionalPanel(sprintf("input['%s'] !== 'correlation'", ns("kind")),
+        selectInput(ns("x"), "横轴 / 数值字段", NULL))),
+      column(4, conditionalPanel(condition(c("scatter", "scatter3d", "line")), selectInput(ns("y"), "纵轴", NULL)))
     ),
+    conditionalPanel(condition("correlation"),
+      selectizeInput(ns("corr_variables"), "相关性字段（数值，可多选）", NULL, multiple = TRUE),
+      fluidRow(column(6, selectInput(ns("corr_method"), "相关系数类型", c("Pearson 线性相关" = "pearson", "Spearman 秩相关" = "spearman"))),
+        column(6, checkboxInput(ns("corr_labels"), "显示相关系数数值", TRUE)))),
     conditionalPanel(condition("scatter3d"), selectInput(ns("z"), "Z 轴（数值字段）", NULL)),
-    conditionalPanel(sprintf("input['%s'] !== 'bar'", ns("kind")),
+    conditionalPanel(sprintf("!['bar','correlation'].includes(input['%s'])", ns("kind")),
       selectInput(ns("group"), "分组字段（可选，仅显示 2～20 个类别的字段）",
         c("不分组" = plot_no_group_value))),
     conditionalPanel(condition(c("hist", "density")),
@@ -225,7 +310,11 @@ analysis_ui <- function(id) {
     conditionalPanel(condition("scatter"), fluidRow(
       column(6, checkboxInput(ns("smooth"), "添加线性回归线", FALSE)),
       column(6, checkboxInput(ns("ribbon"), "显示 95% 均值置信带", TRUE)))),
-    conditionalPanel(condition(c("hist", "density", "scatter")), checkboxInput(ns("facet"), "按组分面显示（选择分组后生效）", FALSE)),
+    conditionalPanel(condition("line"), fluidRow(
+      column(4, checkboxInput(ns("points"), "显示数据点", FALSE)),
+      column(4, checkboxInput(ns("smooth"), "添加 LOESS 趋势线", FALSE)),
+      column(4, checkboxInput(ns("ribbon"), "显示趋势置信带", TRUE)))),
+    conditionalPanel(condition(c("hist", "density", "scatter", "line", "qq", "ecdf")), checkboxInput(ns("facet"), "按组分面显示（选择分组后生效）", FALSE)),
     conditionalPanel(condition(c("box", "violin")), checkboxInput(ns("points"), "叠加原始数据点", FALSE)),
     conditionalPanel(condition(c("box", "violin", "bar")), checkboxInput(ns("horizontal"), "横向显示", FALSE)),
     actionButton(ns("toggle_style"), "编辑图像", icon = icon("sliders-h")),
@@ -248,10 +337,10 @@ analysis_ui <- function(id) {
     conditionalPanel(sprintf("input['%s'] !== 'scatter3d'", ns("kind")), plotOutput(ns("plot"), height = "500px")),
     conditionalPanel(condition("scatter3d"), plotly::plotlyOutput(ns("plot3d"), height = "600px")),
     textOutput(ns("notes")),
-    conditionalPanel(condition(c("hist", "density", "box", "violin")), tableOutput(ns("group_stats"))),
+    conditionalPanel(condition(c("hist", "density", "box", "violin", "correlation")), tableOutput(ns("group_stats"))),
     conditionalPanel(sprintf("input['%s'] !== 'scatter3d'", ns("kind")),
       downloadButton(ns("png"), "下载 PNG 图片"),
-      actionButton(ns("save_png"), "保存 PNG 到工作目录"),
+      actionButton(ns("save_png"), "保存 PNG 到项目文件夹"),
       tags$div(style = "overflow-wrap:anywhere", textOutput(ns("saved_png")))),
     tags$details(tags$summary("查看数值字段描述统计"), tableOutput(ns("summary")))
   )
@@ -266,20 +355,29 @@ analysis_server <- function(id, data, directory = reactive(getwd())) {
     observeEvent(list(data(), input$kind), {
       d <- data()
       numeric <- which(vapply(d, is.numeric, logical(1)))
-      eligible <- if (identical(input$kind, "bar")) seq_along(d) else numeric
-      choices <- setNames(as.character(eligible), paste0(eligible, ". ", names(d)[eligible]))
+      eligible <- if (identical(input$kind, "bar")) seq_along(d) else if (identical(input$kind, "line"))
+        which(vapply(d, function(x) is.numeric(x) || inherits(x, c("Date", "POSIXct", "POSIXlt")), logical(1))) else numeric
+      labels <- if (length(eligible)) paste0(eligible, ". ", names(d)[eligible]) else character()
+      choices <- setNames(as.character(eligible), labels)
       selected <- function(old, choices, fallback) if (length(old) == 1 && old %in% unname(choices)) old else fallback
       first <- unname(head(choices, 1))
       updateSelectInput(session, "x", choices = choices, selected = selected(input$x, choices, first))
-      y_choices <- setNames(as.character(numeric), paste0(numeric, ". ", names(d)[numeric]))
+      y_labels <- if (length(numeric)) paste0(numeric, ". ", names(d)[numeric]) else character()
+      y_choices <- setNames(as.character(numeric), y_labels)
       second <- unname(if (length(y_choices) > 1) y_choices[2] else head(y_choices, 1))
       updateSelectInput(session, "y", choices = y_choices, selected = selected(input$y, y_choices, second))
       third <- unname(if (length(y_choices) > 2) y_choices[3] else tail(y_choices, 1))
       updateSelectInput(session, "z", choices = y_choices, selected = selected(input$z, y_choices, third))
+      corr_selected <- intersect(input$corr_variables, unname(y_choices))
+      if (length(corr_selected) < 2L) corr_selected <- unname(head(y_choices, min(6L, length(y_choices))))
+      updateSelectizeInput(session, "corr_variables", choices = y_choices, selected = corr_selected)
     })
     observeEvent(list(data(), input$kind, input$x, input$y, input$z), {
       d <- data()
-      excluded <- as.integer(c(input$x, if (identical(input$kind, "scatter3d")) c(input$y, input$z)))
+      current_kind <- if (length(input$kind) == 1L) input$kind else ""
+      excluded <- as.integer(c(input$x,
+        if (current_kind %in% c("scatter", "line")) input$y,
+        if (identical(current_kind, "scatter3d")) c(input$y, input$z)))
       candidates <- groupable_columns(d, exclude = excluded)
       group_choices <- c("不分组" = plot_no_group_value)
       if (length(candidates)) {
@@ -295,10 +393,13 @@ analysis_server <- function(id, data, directory = reactive(getwd())) {
       updateSelectInput(session, "group", choices = group_choices, selected = current)
     }, ignoreNULL = FALSE)
     active_group <- reactive({
-      if (identical(input$kind, "bar") || length(input$group) != 1 || is.na(input$group) ||
+      current_kind <- if (length(input$kind) == 1L) input$kind else ""
+      if (current_kind %in% c("bar", "correlation") || length(input$group) != 1 || is.na(input$group) ||
           !nzchar(input$group) || identical(input$group, plot_no_group_value)) return("")
       candidate <- suppressWarnings(as.integer(input$group))
-      excluded <- as.integer(c(input$x, if (identical(input$kind, "scatter3d")) c(input$y, input$z)))
+      excluded <- as.integer(c(input$x,
+        if (current_kind %in% c("scatter", "line")) input$y,
+        if (identical(current_kind, "scatter3d")) c(input$y, input$z)))
       allowed <- groupable_columns(data(), exclude = excluded)
       if (length(candidate) == 1 && !is.na(candidate) && candidate %in% allowed) input$group else ""
     })
@@ -311,15 +412,18 @@ analysis_server <- function(id, data, directory = reactive(getwd())) {
     })
     observeEvent(input$reset_style, {
       o <- plot_defaults()
-      for (name in c("mean_line", "median_line", "smooth", "ribbon", "points", "facet", "horizontal")) updateCheckboxInput(session, name, value = o[[name]])
+      for (name in c("mean_line", "median_line", "smooth", "ribbon", "points", "facet", "horizontal", "corr_labels")) updateCheckboxInput(session, name, value = o[[name]])
       for (name in c("title", "x_label", "y_label", "z_label")) updateTextInput(session, name, value = o[[name]])
-      for (name in c("theme", "color", "palette", "dpi")) updateSelectInput(session, name, selected = as.character(o[[name]]))
+      for (name in c("theme", "color", "palette", "dpi", "corr_method")) updateSelectInput(session, name, selected = as.character(o[[name]]))
       for (name in c("bins", "alpha", "point_size", "line_width")) updateSliderInput(session, name, value = o[[name]])
       for (name in c("font_size", "width", "height")) updateNumericInput(session, name, value = o[[name]])
     })
     chart <- reactive({
-      req(data(), input$kind, input$x)
-      tryCatch(if (identical(input$kind, "scatter3d")) {
+      req(data(), input$kind)
+      if (!identical(input$kind, "correlation")) req(input$x)
+      tryCatch(if (identical(input$kind, "correlation")) {
+        build_correlation_plot(data(), input$corr_variables, settings())
+      } else if (identical(input$kind, "scatter3d")) {
         build_plotly_3d(data(), input$x, input$y, input$z, active_group(), settings())
       } else build_ggplot(data(), input$kind, input$x, input$y, active_group(), settings()),
         error = function(e) validate(need(FALSE, conditionMessage(e))))
@@ -348,11 +452,12 @@ analysis_server <- function(id, data, directory = reactive(getwd())) {
     saved_png <- reactiveVal("")
     output$saved_png <- renderText(saved_png())
     observeEvent(input$save_png, {
-      req(data(), input$x)
+      req(data())
+      if (!identical(input$kind, "correlation")) req(input$x)
       tryCatch({
         path <- save_to_workdir(directory(), "easyr-chart", ".png", write_png)
         saved_png(paste("上次保存：", path))
-        showNotification("PNG 已保存到工作目录。", type = "message")
+        showNotification("PNG 已保存到 EasyR 项目文件夹。", type = "message")
       }, error = function(e) showNotification(conditionMessage(e), type = "error"))
     })
   })

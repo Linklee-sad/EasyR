@@ -101,7 +101,7 @@ ggplot_editor_ui <- function(id, height = "500px") {
     )),
     plotOutput(ns("plot"), height = height),
     downloadButton(ns("download"), "下载 PNG"),
-    actionButton(ns("save"), "保存 PNG 到工作目录"),
+    actionButton(ns("save"), "保存 PNG 到项目文件夹"),
     tags$div(style = "overflow-wrap:anywhere", textOutput(ns("saved")))
   )
 }
@@ -140,7 +140,7 @@ ggplot_editor_server <- function(id, plot, directory = reactive(getwd()), filena
       req(plot())
       tryCatch({
         path <- save_to_workdir(directory(), filename, ".png", write_png)
-        saved(paste("上次保存：", path)); showNotification("PNG 已保存到工作目录。", type = "message")
+        saved(paste("上次保存：", path)); showNotification("PNG 已保存到 EasyR 项目文件夹。", type = "message")
       }, error = function(e) showNotification(conditionMessage(e), type = "error"))
     })
     styled

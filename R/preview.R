@@ -3,12 +3,14 @@ preview_ui <- function(id) {
   tagList(h3("查看处理后的数据"), textOutput(ns("overview")),
           tabsetPanel(
             tabPanel("数据预览", DT::DTOutput(ns("table"))),
-            tabPanel("字段概况", DT::DTOutput(ns("columns")))
+            tabPanel("字段概况", DT::DTOutput(ns("columns"))),
+            tabPanel("AI 数据顾问", ai_data_advisor_ui(ns("ai_advisor")))
           ))
 }
 
-preview_server <- function(id, data) {
+preview_server <- function(id, data, ai_config = reactive(list())) {
   moduleServer(id, function(input, output, session) {
+    ai_data_advisor_server("ai_advisor", data, ai_config)
     output$overview <- renderText({
       if (is.null(data())) return("尚未导入数据。请在左侧选择文件或试用示例。")
       sprintf("%s 行 · %s 列 · %s 个缺失值", nrow(data()), ncol(data()), sum(is.na(data())))
